@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blacklist SONAX</title>
+<style>
+  :root {
+    --ink: #16202e; --ink-soft: #5b6b7d; --line: #dfe4ea;
+    --surface: #fff; --bg: #eef1f5;
+    --accent: #128a5a; --accent-dark: #0d6b45;
+    --ok: #128a5a; --dup: #b7791f; --err: #c0392b;
+    --mono: ui-monospace, "SF Mono", Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--sans); background: var(--bg); color: var(--ink);
+    min-height: 100vh; display: flex; justify-content: center; padding: 32px 16px; }
+  .app { width: 100%; max-width: 560px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  h1 { font-size: 20px; letter-spacing: -0.01em; }
+  h1 span { color: var(--accent); }
+  .user { font-size: 13px; color: var(--ink-soft); }
+  .user a { color: var(--accent); text-decoration: none; margin-left: 8px; cursor: pointer; }
+  .sub { color: var(--ink-soft); font-size: 13px; margin: 2px 0 24px; }
+
+  .card { background: var(--surface); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .step-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--ink-soft); margin-bottom: 10px; font-weight: 600; }
+
+  input[type="text"] { width: 100%; font-family: var(--mono); font-size: 15px;
+    padding: 11px 12px; border: 1px solid var(--line); border-radius: 8px; outline: none; }
+  input[type="text"]:focus { border-color: var(--accent); }
+  input:disabled { background: #f4f6f8; color: var(--ink-soft); }
+  .hint { font-size: 12px; color: var(--ink-soft); margin-top: 8px; }
+
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+  .tab { font-size: 13px; font-weight: 600; padding: 7px 14px; border-radius: 7px;
+    cursor: pointer; color: var(--ink-soft); border: 1px solid transparent; }
+  .tab.active { background: var(--surface); color: var(--ink); border-color: var(--line); }
+
+  .ledger { padding: 0; overflow: hidden; }
+  .ledger-head { padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: center; }
+  .ledger-head .step-label { margin: 0; }
+  .counts { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .rows { max-height: 340px; overflow-y: auto; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 11px 20px;
+    border-bottom: 1px solid var(--line); font-size: 14px; }
+  .row:last-child { border-bottom: none; }
+  .row .num { font-family: var(--mono); flex: 1; }
+  .row .who { font-size: 12px; color: var(--ink-soft); }
+  .row .time { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); }
+  .tag { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    padding: 2px 8px; border-radius: 5px; }
+  .tag.ok  { color: var(--ok);  background: #e4f4ec; }
+  .tag.dup { color: var(--dup); background: #fbf1dc; }
+  .tag.err { color: var(--err); background: #fbe6e3; }
+  .empty { padding: 28px 20px; text-align: center; color: var(--ink-soft); font-size: 13px; }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Black<span>list</span> SONAX</h1>
+      <div class="user" id="userBox"></div>
+    </header>
+    <p class="sub">Digite o celular e aperte Enter. O prefixo <code>contact.celular ==</code> é fixo.</p>
+
+    <div class="card">
+      <div class="step-label">Adicionar número</div>
+      <input type="text" id="campoNumero" placeholder="5511999999999" autocomplete="off">
+      <div class="hint">Só números — o resto é ignorado. Duplicados são detectados automaticamente.</div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active" data-tab="sessao">Nesta sessão</div>
+      <div class="tab" data-tab="historico">Histórico completo</div>
+    </div>
+
+    <div class="card ledger">
+      <div class="ledger-head">
+        <div class="step-label" id="ledgerTitulo">Nesta sessão</div>
+        <div class="counts" id="contadores">0 adicionados</div>
+      </div>
+      <div class="rows" id="rows"><div class="empty" id="vazio">Nada ainda.</div></div>
+    </div>
+  </div>
+
+<script>
+  const campo = document.getElementById('campoNumero');
+  const rows = document.getElementById('rows');
+  const contadores = document.getElementById('contadores');
+  const ledgerTitulo = document.getElementById('ledgerTitulo');
+  const userBox = document.getElementById('userBox');
+
+  let contagem = { ok: 0, dup: 0, err: 0 };
+  let abaAtual = 'sessao';
+  const sessaoItens = [];
+
+  // Confirma login; se não estiver logado, manda pra tela de login
+  (async () => {
+    try {
+      const r = await fetch('/painel/eu');
+      const d = await r.json();
+      if (!d.usuario) { window.location.href = '/login.html'; return; }
+      userBox.innerHTML = `${d.usuario} <a id="sair">sair</a>`;
+      document.getElementById('sair').addEventListener('click', sair);
+      campo.focus();
+    } catch { window.location.href = '/login.html'; }
+  })();
+
+  async function sair() {
+    await fetch('/painel/logout', { method: 'POST' });
+    window.location.href = '/login.html';
+  }
+
+  // Enter = adiciona
+  campo.addEventListener('keydown', async (e) => {
+    if (e.key !== 'Enter') return;
+    const valor = campo.value.trim();
+    if (!valor) return;
+    campo.disabled = true;
+    try {
+      const r = await fetch('/adicionar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ numero: valor })
+      });
+      const d = await r.json();
+      empilharSessao(valor, d);
+    } catch {
+      empilharSessao(valor, { status: 'erro', mensagem: 'Sem conexão.' });
+    }
+    campo.disabled = false;
+    campo.value = '';
+    campo.focus();
+  });
+
+  const MAPA = { ok: 'ok', duplicado: 'dup', invalido: 'err', erro: 'err' };
+  const ROTULO = { ok: 'add', dup: 'já existe', err: 'erro' };
+
+  function empilharSessao(valorDigitado, resultado) {
+    const classe = MAPA[resultado.status] || 'err';
+    if (classe === 'ok') contagem.ok++; else if (classe === 'dup') contagem.dup++; else contagem.err++;
+    sessaoItens.unshift({
+      numero: valorDigitado.replace(/\D/g, '') || valorDigitado,
+      classe,
+      hora: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      msg: resultado.mensagem || ''
+    });
+    if (abaAtual === 'sessao') renderSessao();
+  }
+
+  function renderSessao() {
+    ledgerTitulo.textContent = 'Nesta sessão';
+    const partes = [];
+    if (contagem.ok) partes.push(`${contagem.ok} adicionados`);
+    if (contagem.dup) partes.push(`${contagem.dup} repetidos`);
+    if (contagem.err) partes.push(`${contagem.err} com erro`);
+    contadores.textContent = partes.join(' · ') || '0 adicionados';
+
+    if (!sessaoItens.length) { rows.innerHTML = '<div class="empty">Nada ainda.</div>'; return; }
+    rows.innerHTML = sessaoItens.map(i => `
+      <div class="row" title="${i.msg}">
+        <span class="num">${i.numero}</span>
+        <span class="tag ${i.classe}">${ROTULO[i.classe]}</span>
+        <span class="time">${i.hora}</span>
+      </div>`).join('');
+  }
+
+  async function renderHistorico() {
+    ledgerTitulo.textContent = 'Histórico completo';
+    contadores.textContent = 'carregando...';
+    try {
+      const r = await fetch('/auditoria');
+      const dados = await r.json();
+      contadores.textContent = `${dados.length} registros`;
+      if (!dados.length) { rows.innerHTML = '<div class="empty">Sem registros ainda.</div>'; return; }
+      rows.innerHTML = dados.map(d => {
+        const classe = MAPA[d.status] || 'err';
+        const hora = new Date(d.quando).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        return `<div class="row" title="${d.mensagem || ''}">
+          <span class="num">${d.numero}</span>
+          <span class="who">${d.usuario}</span>
+          <span class="tag ${classe}">${ROTULO[classe]}</span>
+          <span class="time">${hora}</span>
+        </div>`;
+      }).join('');
+    } catch {
+      contadores.textContent = '';
+      rows.innerHTML = '<div class="empty">Não foi possível carregar o histórico.</div>';
+    }
+  }
+
+  document.querySelectorAll('.tab').forEach(t => {
+    t.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      abaAtual = t.dataset.tab;
+      if (abaAtual === 'sessao') renderSessao(); else renderHistorico();
+    });
+  });
+</script>
+</body>
+</html>
