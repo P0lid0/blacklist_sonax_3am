@@ -1,26 +1,24 @@
 // sonax.js
-// Automação da SONAX: login, navegar até o nó da blacklist e adicionar número.
-
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 
 const URL_BASE = (process.env.SONAX_URL || 'https://omni.sonax.net.br').replace(/\/+$/, '');
 const COOKIES_PATH = './sessao.json';
 
-// --- Seletores de LOGIN ---
+// --- LOGIN ---
 const SEL_USUARIO     = 'input[placeholder="Informe seu usuário"]';
 const SEL_SENHA       = 'input[type="password"]';
 const SEL_BOTAO_LOGIN = 'button::-p-text(Entrar)';
 
-// --- Seletores do NÓ / modal ---
+// --- NÓ / modal ---
 const SEL_CONDICIONAL  = 'input[placeholder="Condicional"]';
 const SEL_BOTAO_MAIS   = process.env.SEL_MAIS   || 'a.btn-outline-success';
 const SEL_BOTAO_SALVAR = process.env.SEL_SALVAR || 'button::-p-text(Salvar)';
 
-// --- Identificadores específicos do bot/nó ---
-const NOME_BOT = process.env.BOT_NOME || 'Bot Recrutamento IA V3 (Receptivo)';
-const NODE_ID  = process.env.NODE_ID  || 'ZpzeWvsfIF';   // nó Condicional BLACKLIST
-const TAG_ACAO = process.env.TAG_ACAO || 'G04dF8alHd';   // nó seguinte que toda linha aponta
+// --- Caminho DIRETO pro bot (sem menu, sem busca) ---
+const BOT_PATH = process.env.BOT_PATH || '/omnichannel-chat/bots/68488940f50ece5e46b0ff4f';
+const NODE_ID  = process.env.NODE_ID  || 'ZpzeWvsfIF';
+const TAG_ACAO = process.env.TAG_ACAO || 'G04dF8alHd';
 
 let browser = null;
 let page = null;
@@ -29,12 +27,20 @@ async function garantirNavegador() {
   if (browser && page && !page.isClosed()) return;
   browser = await puppeteer.launch({
     headless: process.env.HEADLESS === 'false' ? false : true,
-    defaultViewport: null,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--start-maximized'],
+    // viewport FIXO: em headless o padrão é pequeno e o layout da SONAX muda
+    defaultViewport: { width: 1920, height: 1080 },
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1920,1080'],
   });
   const paginas = await browser.pages();
   page = paginas[0] || await browser.newPage();
   browser.on('disconnected', () => { browser = null; page = null; });
+}
+
+// Fecha tudo e recomeça do zero (usado quando algo trava)
+async function resetarNavegador() {
+  try { if (browser) await browser.close(); } catch {}
+  browser = null; page = null;
+  await garantirNavegador();
 }
 
 async function estaLogado() {
@@ -61,11 +67,6 @@ async function login() {
   fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
 }
 
-async function clicarXpath(xp) {
-  await page.waitForSelector(`xpath/${xp}`, { timeout: 20000 });
-  await page.click(`xpath/${xp}`);
-}
-
 async function fecharPopup() {
   try {
     await page.keyboard.press('Escape');
@@ -83,46 +84,56 @@ async function fecharPopup() {
   }
 }
 
-async function irAteONo() {
-  console.log('  → passo 1: abrir menu e clicar em Bots');
-  await clicarXpath('/html/body/app-root/app-layout-omnichannel/div/div/div/div/app-sidebar/div[1]/nav/div[2]/div');
-  await page.waitForSelector('::-p-text(Bots)', { timeout: 20000 });
-  await page.click('::-p-text(Bots)');
+async function tirarPrint() {
+  try {
+    await page.screenshot({ path: './erro.png' });
+    console.log('  📸 print do erro salvo em erro.png');
+  } catch {}
+}
 
-  await new Promise(r => setTimeout(r, 1000));
+async function irAteONo() {
+  console.log('  → passo 1: abrir o bot direto pela URL');
+  await page.goto(URL_BASE + BOT_PATH, { waitUntil: 'networkidle2' });
+
+  // Se caiu na tela de login, loga e volta pro bot
+  if (await page.$(SEL_SENHA)) {
+    console.log('    (sessão caiu, refazendo login)');
+    await login();
+    await page.goto(URL_BASE + BOT_PATH, { waitUntil: 'networkidle2' });
+  }
+
   await fecharPopup();
 
-  console.log('  → passo 2: buscar o bot pelo nome');
-  await page.waitForSelector('app-flows input', { timeout: 20000 });
-  const campoBusca = await page.$('app-flows input');
-  await campoBusca.click({ clickCount: 3 });
-  await campoBusca.press('Backspace');
-  await campoBusca.type(NOME_BOT);
-  await new Promise(r => setTimeout(r, 1500));
-
-  console.log('  → passo 3: clicar em Configurar do bot');
-  const xpathConfig = `//tr[contains(., "${NOME_BOT}")]//button[contains(., "Configurar")]`;
-  const botaoConfig = await page.waitForSelector(`xpath/${xpathConfig}`, { timeout: 20000 });
-  await botaoConfig.evaluate(el => el.click());
-
-  console.log('  → passo 4: abrir o fluxo Principal (força o grafo a carregar)');
-  await page.waitForSelector('::-p-text(Principal)', { timeout: 20000 });
+  console.log('  → passo 2: abrir o fluxo Principal');
+  await page.waitForSelector('::-p-text(Principal)', { timeout: 30000 });
   await page.click('::-p-text(Principal)');
   await new Promise(r => setTimeout(r, 2500));
 
-  console.log('  → passo 5: rolar até o nó e clicar nele de verdade');
+  console.log('  → passo 3: clicar no nó da blacklist');
   await page.waitForSelector(`#${NODE_ID}`, { timeout: 60000 });
   await page.evaluate((id) => {
     document.querySelector('#' + id).scrollIntoView({ block: 'center', inline: 'center' });
   }, NODE_ID);
   await new Promise(r => setTimeout(r, 1000));
-  const box = await (await page.$(`#${NODE_ID}`)).boundingBox();
-  if (box) {
+
+  const el = await page.$(`#${NODE_ID}`);
+  const box = await el.boundingBox();
+  const naTela = box && box.x >= 0 && box.y >= 0 && box.x < 1920 && box.y < 1080;
+  if (naTela) {
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  } else {
+    // fallback: se o nó ficou fora da área visível, dispara o clique direto
+    await page.evaluate((id) => {
+      const no = document.querySelector('#' + id);
+      const alvo = no.querySelector('.node') || no;
+      alvo.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, view: window }));
+      alvo.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, view: window }));
+      alvo.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    }, NODE_ID);
   }
   await new Promise(r => setTimeout(r, 1200));
 
-  console.log('  → passo 6: aguardar o painel do nó e clicar no lápis');
+  console.log('  → passo 4: abrir a edição do nó (lápis)');
   await page.waitForSelector('a.item-node-action-button i.fa-pencil', { timeout: 30000 });
   await new Promise(r => setTimeout(r, 600));
   await page.evaluate(() => {
@@ -136,12 +147,6 @@ async function irAteONo() {
 
 async function garantirNoNo() {
   await garantirNavegador();
-  const naSonax = page.url().includes('sonax.net.br');
-  if (!naSonax || !(await estaLogado())) {
-    console.log('→ fazendo login na SONAX...');
-    await login();
-    console.log('✓ logado');
-  }
   const noAberto = await page.$(SEL_CONDICIONAL);
   if (!noAberto) {
     console.log('→ navegando até o nó da blacklist...');
@@ -158,11 +163,20 @@ async function adicionarNumero(numeroBruto) {
     return { status: 'erro', mensagem: 'Faltam SONAX_USUARIO e SONAX_SENHA no .env.' };
   }
 
+  // 1ª tentativa; se falhar, reseta o navegador e tenta de novo do zero
   try {
     await garantirNoNo();
   } catch (e) {
-    console.error('❌ Travou ao ir até o nó:', e.message);
-    return { status: 'erro', mensagem: `Travou ao ir até o nó: ${e.message}` };
+    console.warn('⚠️ falhou, recomeçando do zero:', e.message);
+    await tirarPrint();
+    try {
+      await resetarNavegador();
+      await garantirNoNo();
+    } catch (e2) {
+      await tirarPrint();
+      console.error('❌ Travou ao ir até o nó:', e2.message);
+      return { status: 'erro', mensagem: `Travou ao ir até o nó: ${e2.message}` };
+    }
   }
 
   // Duplicado?
@@ -173,21 +187,18 @@ async function adicionarNumero(numeroBruto) {
 
   // Cria a condição nova
   await page.click(SEL_BOTAO_MAIS);
-  await new Promise(r => setTimeout(r, 800)); // espera a linha nova surgir
+  await new Promise(r => setTimeout(r, 800));
 
-  // Preenche a PRIMEIRA linha vazia: texto + dropdown (nó seguinte) na MESMA linha
   const resultado = await page.evaluate((numero, tagValor) => {
     const inputs = Array.from(document.querySelectorAll('input[placeholder="Condicional"]'));
     const vazio = inputs.find(i => !i.value.trim());
     if (!vazio) return { ok: false, motivo: 'sem linha vazia' };
 
-    // 1) escreve o texto forçando o Angular a reconhecer
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     setter.call(vazio, 'contact.celular == ' + numero);
     vazio.dispatchEvent(new Event('input', { bubbles: true }));
     vazio.dispatchEvent(new Event('change', { bubbles: true }));
 
-    // 2) sobe no DOM até achar a linha inteira e pegar o <select> dela
     let container = vazio.parentElement;
     let select = null;
     for (let i = 0; i < 6 && container; i++) {
@@ -197,13 +208,11 @@ async function adicionarNumero(numeroBruto) {
     }
     if (!select) return { ok: true, tag: false, motivo: 'texto ok, select não encontrado' };
 
-    // 3) escolhe a opção que contém o nó desejado (formato pode ser "5: G04...")
     const opt = Array.from(select.options).find(o =>
       o.value.includes(tagValor) || o.textContent.includes(tagValor)
     );
     if (!opt) return { ok: true, tag: false, motivo: 'opção do nó não encontrada' };
 
-    // seleção via setter nativo + evento change (Angular)
     const selSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
     selSetter.call(select, opt.value);
     select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -211,6 +220,7 @@ async function adicionarNumero(numeroBruto) {
   }, numero, TAG_ACAO);
 
   if (!resultado.ok) {
+    await tirarPrint();
     return { status: 'erro', mensagem: `Não preencheu a linha: ${resultado.motivo}` };
   }
   if (!resultado.tag) {
@@ -218,9 +228,7 @@ async function adicionarNumero(numeroBruto) {
   }
   await new Promise(r => setTimeout(r, 500));
 
-  // Salva
   await page.click(SEL_BOTAO_SALVAR);
-
   return { status: 'ok', mensagem: `${numero} adicionado.` };
 }
 
