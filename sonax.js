@@ -15,7 +15,7 @@ const SEL_CONDICIONAL  = 'input[placeholder="Condicional"]';
 const SEL_BOTAO_MAIS   = process.env.SEL_MAIS   || 'a.btn-outline-success';
 const SEL_BOTAO_SALVAR = process.env.SEL_SALVAR || 'button::-p-text(Salvar)';
 
-// --- Caminho DIRETO pro bot (sem menu, sem busca) ---
+// --- Caminho DIRETO pro bot ---
 const BOT_PATH = process.env.BOT_PATH || '/omnichannel-chat/bots/68488940f50ece5e46b0ff4f';
 const NODE_ID  = process.env.NODE_ID  || 'ZpzeWvsfIF';
 const TAG_ACAO = process.env.TAG_ACAO || 'G04dF8alHd';
@@ -27,7 +27,6 @@ async function garantirNavegador() {
   if (browser && page && !page.isClosed()) return;
   browser = await puppeteer.launch({
     headless: process.env.HEADLESS === 'false' ? false : true,
-    // viewport FIXO: em headless o padrão é pequeno e o layout da SONAX muda
     defaultViewport: { width: 1920, height: 1080 },
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1920,1080'],
   });
@@ -36,7 +35,6 @@ async function garantirNavegador() {
   browser.on('disconnected', () => { browser = null; page = null; });
 }
 
-// Fecha tudo e recomeça do zero (usado quando algo trava)
 async function resetarNavegador() {
   try { if (browser) await browser.close(); } catch {}
   browser = null; page = null;
@@ -67,21 +65,36 @@ async function login() {
   fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
 }
 
-async function fecharPopup() {
-  try {
-    await page.keyboard.press('Escape');
-    await new Promise(r => setTimeout(r, 400));
-  } catch {}
-  const SELETORES_FECHAR = [
-    'button::-p-text(Fechar)', 'button::-p-text(Entendi)', 'button::-p-text(OK)',
-    '.modal button.close', '[aria-label="Close"]',
-  ];
-  for (const sel of SELETORES_FECHAR) {
-    try {
-      const botao = await page.$(sel);
-      if (botao) { await botao.click(); await new Promise(r => setTimeout(r, 400)); break; }
-    } catch {}
+// Fecha o popup de propaganda que aparece ao abrir o bot.
+// Clica no "Clique aqui para não exibir mais essa notificação".
+// Tolerante: se não houver popup, apenas segue.
+async function fecharPopupPropaganda() {
+  // dá um tempinho pro banner aparecer
+  await new Promise(r => setTimeout(r, 1500));
+
+  const fechado = await page.evaluate(() => {
+    // 1) procura o "não exibir mais" pelo texto
+    const alvos = Array.from(document.querySelectorAll('p, a, span, button'));
+    const naoExibir = alvos.find(el =>
+      el.textContent && el.textContent.toLowerCase().includes('não exibir mais')
+    );
+    if (naoExibir) { naoExibir.click(); return 'nao-exibir'; }
+
+    // 2) fallback: botão X de fechar (modais Bootstrap/genéricos)
+    const x = document.querySelector('.modal .close, [aria-label="Close"], button.close');
+    if (x) { x.click(); return 'x'; }
+
+    return null;
+  });
+
+  if (fechado) {
+    console.log(`    (popup fechado via: ${fechado})`);
+    await new Promise(r => setTimeout(r, 1000));
   }
+
+  // reforço: Escape, caso ainda tenha algo por cima
+  try { await page.keyboard.press('Escape'); } catch {}
+  await new Promise(r => setTimeout(r, 400));
 }
 
 async function tirarPrint() {
@@ -102,7 +115,8 @@ async function irAteONo() {
     await page.goto(URL_BASE + BOT_PATH, { waitUntil: 'networkidle2' });
   }
 
-  await fecharPopup();
+  console.log('  → passo 1.5: fechar popup de propaganda');
+  await fecharPopupPropaganda();
 
   console.log('  → passo 2: abrir o fluxo Principal');
   await page.waitForSelector('::-p-text(Principal)', { timeout: 30000 });
@@ -122,7 +136,6 @@ async function irAteONo() {
   if (naTela) {
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   } else {
-    // fallback: se o nó ficou fora da área visível, dispara o clique direto
     await page.evaluate((id) => {
       const no = document.querySelector('#' + id);
       const alvo = no.querySelector('.node') || no;
@@ -163,7 +176,6 @@ async function adicionarNumero(numeroBruto) {
     return { status: 'erro', mensagem: 'Faltam SONAX_USUARIO e SONAX_SENHA no .env.' };
   }
 
-  // 1ª tentativa; se falhar, reseta o navegador e tenta de novo do zero
   try {
     await garantirNoNo();
   } catch (e) {
@@ -179,13 +191,11 @@ async function adicionarNumero(numeroBruto) {
     }
   }
 
-  // Duplicado?
   const existentes = await page.$$eval(SEL_CONDICIONAL, els => els.map(e => e.value));
   if (existentes.map(v => v.replace(/\D/g, '')).includes(numero)) {
     return { status: 'duplicado', mensagem: `${numero} já está na lista.` };
   }
 
-  // Cria a condição nova
   await page.click(SEL_BOTAO_MAIS);
   await new Promise(r => setTimeout(r, 800));
 
