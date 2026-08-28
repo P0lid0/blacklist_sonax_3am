@@ -66,21 +66,16 @@ async function login() {
 }
 
 // Fecha o popup de propaganda que aparece ao abrir o bot.
-// Clica no "Clique aqui para não exibir mais essa notificação".
-// Tolerante: se não houver popup, apenas segue.
 async function fecharPopupPropaganda() {
-  // dá um tempinho pro banner aparecer
-  await new Promise(r => setTimeout(r, 1500));
+  await new Promise(r => setTimeout(r, 1500)); // espera o banner aparecer
 
   const fechado = await page.evaluate(() => {
-    // 1) procura o "não exibir mais" pelo texto
     const alvos = Array.from(document.querySelectorAll('p, a, span, button'));
     const naoExibir = alvos.find(el =>
       el.textContent && el.textContent.toLowerCase().includes('não exibir mais')
     );
     if (naoExibir) { naoExibir.click(); return 'nao-exibir'; }
 
-    // 2) fallback: botão X de fechar (modais Bootstrap/genéricos)
     const x = document.querySelector('.modal .close, [aria-label="Close"], button.close');
     if (x) { x.click(); return 'x'; }
 
@@ -92,7 +87,6 @@ async function fecharPopupPropaganda() {
     await new Promise(r => setTimeout(r, 1000));
   }
 
-  // reforço: Escape, caso ainda tenha algo por cima
   try { await page.keyboard.press('Escape'); } catch {}
   await new Promise(r => setTimeout(r, 400));
 }
@@ -118,10 +112,10 @@ async function irAteONo() {
   console.log('  → passo 1.5: fechar popup de propaganda');
   await fecharPopupPropaganda();
 
-  console.log('  → passo 2: abrir o fluxo Principal');
-  await page.waitForSelector('::-p-text(Principal)', { timeout: 30000 });
-  await page.click('::-p-text(Principal)');
-  await new Promise(r => setTimeout(r, 2500));
+  // (O passo "Principal" foi removido — a SONAX não usa mais esse botão.
+  //  O grafo agora carrega direto; só esperamos ele montar.)
+  console.log('  → passo 2: aguardar o grafo carregar');
+  await new Promise(r => setTimeout(r, 6000));
 
   console.log('  → passo 3: clicar no nó da blacklist');
   await page.waitForSelector(`#${NODE_ID}`, { timeout: 60000 });
